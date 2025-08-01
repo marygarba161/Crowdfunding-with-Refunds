@@ -13,6 +13,7 @@
 (define-constant err-insufficient-votes (err u111))
 (define-constant err-milestone-completed (err u112))
 (define-constant err-invalid-milestone (err u113))
+(define-constant err-update-not-found (err u114))
 
 (define-map campaigns
   { campaign-id: uint }
@@ -50,7 +51,18 @@
   { voted: bool }
 )
 
+(define-map campaign-updates
+  { campaign-id: uint, update-id: uint }
+  {
+    title: (string-ascii 100),
+    content: (string-ascii 1000),
+    timestamp: uint,
+    creator: principal
+  }
+)
+
 (define-data-var next-milestone-id uint u1)
+(define-data-var next-update-id uint u1)
 
 (define-data-var next-campaign-id uint u1)
 
@@ -346,5 +358,67 @@
       err-milestone-not-found
     )
     err-not-found
+  )
+)
+
+(define-public (post-update (campaign-id uint) (title (string-ascii 100)) (content (string-ascii 1000)))
+  (let
+    (
+      (campaign (unwrap! (map-get? campaigns { campaign-id: campaign-id }) err-not-found))
+      (update-id (var-get next-update-id))
+    )
+    (asserts! (is-eq tx-sender (get creator campaign)) err-owner-only)
+    (asserts! (> (len title) u0) err-invalid-amount)
+    (asserts! (> (len content) u0) err-invalid-amount)
+    
+    (map-set campaign-updates
+      { campaign-id: campaign-id, update-id: update-id }
+      {
+        title: title,
+        content: content,
+        timestamp: stacks-block-height,
+        creator: tx-sender
+      }
+    )
+    
+    (var-set next-update-id (+ update-id u1))
+    (ok update-id)
+  )
+)
+
+(define-read-only (get-update (campaign-id uint) (update-id uint))
+  (map-get? campaign-updates { campaign-id: campaign-id, update-id: update-id })
+)
+
+(define-read-only (get-latest-update-id)
+  (- (var-get next-update-id) u1)
+)
+
+(define-read-only (campaign-has-updates (campaign-id uint))
+  (let
+    (
+      (latest-id (get-latest-update-id))
+    )
+    (if (is-eq latest-id u0)
+      false
+      (is-some (map-get? campaign-updates { campaign-id: campaign-id, update-id: latest-id }))
+    )
+  )
+)
+
+(define-read-only (get-update-count (campaign-id uint))
+  (let
+    (
+      (latest-id (get-latest-update-id))
+      (count u0)
+    )
+    (fold check-update-exists (list u1 u2 u3 u4 u5 u6 u7 u8 u9 u10 u11 u12 u13 u14 u15 u16 u17 u18 u19 u20) { campaign-id: campaign-id, count: u0 })
+  )
+)
+
+(define-private (check-update-exists (update-id uint) (data { campaign-id: uint, count: uint }))
+  (if (is-some (map-get? campaign-updates { campaign-id: (get campaign-id data), update-id: update-id }))
+    { campaign-id: (get campaign-id data), count: (+ (get count data) u1) }
+    data
   )
 )
