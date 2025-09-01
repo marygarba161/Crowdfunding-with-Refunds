@@ -14,6 +14,9 @@
 (define-constant err-milestone-completed (err u112))
 (define-constant err-invalid-milestone (err u113))
 (define-constant err-update-not-found (err u114))
+(define-constant err-extension-not-found (err u115))
+(define-constant err-extension-expired (err u116))
+(define-constant err-extension-approved (err u117))
 
 (define-map campaigns
   { campaign-id: uint }
@@ -59,6 +62,23 @@
     timestamp: uint,
     creator: principal
   }
+)
+
+(define-map extension-requests
+  { campaign-id: uint }
+  {
+    new-deadline: uint,
+    votes-required: uint,
+    votes-received: uint,
+    voting-deadline: uint,
+    approved: bool,
+    applied: bool
+  }
+)
+
+(define-map extension-votes
+  { campaign-id: uint, voter: principal }
+  { voted: bool }
 )
 
 (define-data-var next-milestone-id uint u1)
@@ -420,5 +440,131 @@
   (if (is-some (map-get? campaign-updates { campaign-id: (get campaign-id data), update-id: update-id }))
     { campaign-id: (get campaign-id data), count: (+ (get count data) u1) }
     data
+  )
+)
+
+(define-public (request-extension (campaign-id uint) (additional-blocks uint) (votes-required uint))
+  (let
+    (
+      (campaign (unwrap! (map-get? campaigns { campaign-id: campaign-id }) err-not-found))
+      (existing-request (map-get? extension-requests { campaign-id: campaign-id }))
+    )
+    (asserts! (is-eq tx-sender (get creator campaign)) err-owner-only)
+    (asserts! (get active campaign) err-campaign-ended)
+    (asserts! (> additional-blocks u0) err-invalid-amount)
+    (asserts! (> votes-required u0) err-invalid-milestone)
+    (asserts! (is-none existing-request) err-already-exists)
+    
+    (map-set extension-requests
+      { campaign-id: campaign-id }
+      {
+        new-deadline: (+ (get deadline campaign) additional-blocks),
+        votes-required: votes-required,
+        votes-received: u0,
+        voting-deadline: (+ stacks-block-height u144),
+        approved: false,
+        applied: false
+      }
+    )
+    
+    (ok true)
+  )
+)
+
+(define-public (vote-extension (campaign-id uint))
+  (let
+    (
+      (campaign (unwrap! (map-get? campaigns { campaign-id: campaign-id }) err-not-found))
+      (extension-request (unwrap! (map-get? extension-requests { campaign-id: campaign-id }) err-extension-not-found))
+      (contribution (unwrap! (map-get? contributions { campaign-id: campaign-id, contributor: tx-sender }) err-no-contribution))
+      (existing-vote (map-get? extension-votes { campaign-id: campaign-id, voter: tx-sender }))
+    )
+    (asserts! (<= stacks-block-height (get voting-deadline extension-request)) err-extension-expired)
+    (asserts! (not (get approved extension-request)) err-extension-approved)
+    (asserts! (is-none existing-vote) err-already-claimed)
+    
+    (map-set extension-votes
+      { campaign-id: campaign-id, voter: tx-sender }
+      { voted: true }
+    )
+    
+    (map-set extension-requests
+      { campaign-id: campaign-id }
+      (merge extension-request { votes-received: (+ (get votes-received extension-request) u1) })
+    )
+    
+    (ok true)
+  )
+)
+
+(define-public (approve-extension (campaign-id uint))
+  (let
+    (
+      (campaign (unwrap! (map-get? campaigns { campaign-id: campaign-id }) err-not-found))
+      (extension-request (unwrap! (map-get? extension-requests { campaign-id: campaign-id }) err-extension-not-found))
+    )
+    (asserts! (is-eq tx-sender (get creator campaign)) err-owner-only)
+    (asserts! (>= (get votes-received extension-request) (get votes-required extension-request)) err-insufficient-votes)
+    (asserts! (not (get approved extension-request)) err-extension-approved)
+    (asserts! (<= stacks-block-height (get voting-deadline extension-request)) err-extension-expired)
+    
+    (map-set extension-requests
+      { campaign-id: campaign-id }
+      (merge extension-request { approved: true })
+    )
+    
+    (ok true)
+  )
+)
+
+(define-public (apply-extension (campaign-id uint))
+  (let
+    (
+      (campaign (unwrap! (map-get? campaigns { campaign-id: campaign-id }) err-not-found))
+      (extension-request (unwrap! (map-get? extension-requests { campaign-id: campaign-id }) err-extension-not-found))
+    )
+    (asserts! (is-eq tx-sender (get creator campaign)) err-owner-only)
+    (asserts! (get approved extension-request) err-insufficient-votes)
+    (asserts! (not (get applied extension-request)) err-already-claimed)
+    
+    (map-set campaigns
+      { campaign-id: campaign-id }
+      (merge campaign { deadline: (get new-deadline extension-request) })
+    )
+    
+    (map-set extension-requests
+      { campaign-id: campaign-id }
+      (merge extension-request { applied: true })
+    )
+    
+    (ok (get new-deadline extension-request))
+  )
+)
+
+(define-read-only (get-extension-request (campaign-id uint))
+  (map-get? extension-requests { campaign-id: campaign-id })
+)
+
+(define-read-only (get-extension-vote (campaign-id uint) (voter principal))
+  (map-get? extension-votes { campaign-id: campaign-id, voter: voter })
+)
+
+(define-read-only (can-vote-extension (campaign-id uint) (voter principal))
+  (match (map-get? campaigns { campaign-id: campaign-id })
+    campaign
+    (match (map-get? extension-requests { campaign-id: campaign-id })
+      extension-request
+      (match (map-get? contributions { campaign-id: campaign-id, contributor: voter })
+        contribution
+        (ok (and
+          (<= stacks-block-height (get voting-deadline extension-request))
+          (not (get approved extension-request))
+          (is-none (map-get? extension-votes { campaign-id: campaign-id, voter: voter }))
+        ))
+        err-no-contribution
+      )
+      err-extension-not-found
+    )
+    err-not-found
   )
 )
