@@ -17,6 +17,8 @@
 (define-constant err-extension-not-found (err u115))
 (define-constant err-extension-expired (err u116))
 (define-constant err-extension-approved (err u117))
+(define-constant err-tier-not-found (err u118))
+(define-constant err-tier-exists (err u119))
 
 (define-map campaigns
   { campaign-id: uint }
@@ -81,6 +83,23 @@
   { voted: bool }
 )
 
+(define-map reward-tiers
+  { campaign-id: uint, tier-id: uint }
+  {
+    name: (string-ascii 50),
+    description: (string-ascii 200),
+    min-contribution: uint,
+    max-contributors: uint,
+    current-contributors: uint
+  }
+)
+
+(define-map tier-claims
+  { campaign-id: uint, tier-id: uint, contributor: principal }
+  { claimed: bool }
+)
+
+(define-data-var next-tier-id uint u1)
 (define-data-var next-milestone-id uint u1)
 (define-data-var next-update-id uint u1)
 
@@ -566,5 +585,95 @@
       err-extension-not-found
     )
     err-not-found
+  )
+)
+
+(define-public (create-reward-tier (campaign-id uint) (name (string-ascii 50)) (description (string-ascii 200)) (min-contribution uint) (max-contributors uint))
+  (let
+    (
+      (campaign (unwrap! (map-get? campaigns { campaign-id: campaign-id }) err-not-found))
+      (tier-id (var-get next-tier-id))
+    )
+    (asserts! (is-eq tx-sender (get creator campaign)) err-owner-only)
+    (asserts! (get active campaign) err-campaign-ended)
+    (asserts! (> min-contribution u0) err-invalid-amount)
+    (asserts! (> max-contributors u0) err-invalid-amount)
+    (asserts! (> (len name) u0) err-invalid-amount)
+    
+    (map-set reward-tiers
+      { campaign-id: campaign-id, tier-id: tier-id }
+      {
+        name: name,
+        description: description,
+        min-contribution: min-contribution,
+        max-contributors: max-contributors,
+        current-contributors: u0
+      }
+    )
+    
+    (var-set next-tier-id (+ tier-id u1))
+    (ok tier-id)
+  )
+)
+
+(define-public (claim-tier-reward (campaign-id uint) (tier-id uint))
+  (let
+    (
+      (campaign (unwrap! (map-get? campaigns { campaign-id: campaign-id }) err-not-found))
+      (tier (unwrap! (map-get? reward-tiers { campaign-id: campaign-id, tier-id: tier-id }) err-tier-not-found))
+      (contribution (unwrap! (map-get? contributions { campaign-id: campaign-id, contributor: tx-sender }) err-no-contribution))
+      (existing-claim (map-get? tier-claims { campaign-id: campaign-id, tier-id: tier-id, contributor: tx-sender }))
+    )
+    (asserts! (>= (get amount contribution) (get min-contribution tier)) err-invalid-amount)
+    (asserts! (< (get current-contributors tier) (get max-contributors tier)) err-already-exists)
+    (asserts! (is-none existing-claim) err-already-claimed)
+    
+    (map-set tier-claims
+      { campaign-id: campaign-id, tier-id: tier-id, contributor: tx-sender }
+      { claimed: true }
+    )
+    
+    (map-set reward-tiers
+      { campaign-id: campaign-id, tier-id: tier-id }
+      (merge tier { current-contributors: (+ (get current-contributors tier) u1) })
+    )
+    
+    (ok true)
+  )
+)
+
+(define-read-only (get-reward-tier (campaign-id uint) (tier-id uint))
+  (map-get? reward-tiers { campaign-id: campaign-id, tier-id: tier-id })
+)
+
+(define-read-only (get-tier-claim (campaign-id uint) (tier-id uint) (contributor principal))
+  (map-get? tier-claims { campaign-id: campaign-id, tier-id: tier-id, contributor: contributor })
+)
+
+(define-read-only (can-claim-tier (campaign-id uint) (tier-id uint) (contributor principal))
+  (match (map-get? campaigns { campaign-id: campaign-id })
+    campaign
+    (match (map-get? reward-tiers { campaign-id: campaign-id, tier-id: tier-id })
+      tier
+      (match (map-get? contributions { campaign-id: campaign-id, contributor: contributor })
+        contribution
+        (ok (and
+          (>= (get amount contribution) (get min-contribution tier))
+          (< (get current-contributors tier) (get max-contributors tier))
+          (is-none (map-get? tier-claims { campaign-id: campaign-id, tier-id: tier-id, contributor: contributor }))
+        ))
+        err-no-contribution
+      )
+      err-tier-not-found
+    )
+    err-not-found
+  )
+)
+
+(define-read-only (get-contributor-eligible-tiers (campaign-id uint) (contributor principal))
+  (match (map-get? contributions { campaign-id: campaign-id, contributor: contributor })
+    contribution
+    (ok (get amount contribution))
+    err-no-contribution
   )
 )
