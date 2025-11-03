@@ -677,3 +677,43 @@
     err-no-contribution
   )
 )
+
+(define-public (pause-campaign (campaign-id uint))
+  (let
+    (
+      (campaign (unwrap! (map-get? campaigns { campaign-id: campaign-id }) err-not-found))
+    )
+    (asserts! (is-eq tx-sender (get creator campaign)) err-owner-only)
+    (asserts! (<= stacks-block-height (get deadline campaign)) err-campaign-ended)
+    (asserts! (get active campaign) err-campaign-ended)
+    (map-set campaigns
+      { campaign-id: campaign-id }
+      (merge campaign { active: false })
+    )
+    (ok true)
+  )
+)
+
+(define-public (resume-campaign (campaign-id uint))
+  (let
+    (
+      (campaign (unwrap! (map-get? campaigns { campaign-id: campaign-id }) err-not-found))
+    )
+    (asserts! (is-eq tx-sender (get creator campaign)) err-owner-only)
+    (asserts! (<= stacks-block-height (get deadline campaign)) err-campaign-ended)
+    (asserts! (not (get active campaign)) err-campaign-active)
+    (map-set campaigns
+      { campaign-id: campaign-id }
+      (merge campaign { active: true })
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (is-campaign-paused (campaign-id uint))
+  (match (map-get? campaigns { campaign-id: campaign-id })
+    campaign
+    (ok (not (get active campaign)))
+    err-not-found
+  )
+)
